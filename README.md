@@ -1,14 +1,16 @@
-# twitter-airflow-data-engineering-project
 Twitter ETL Pipeline with Apache Airflow & AWS
 
 Goal: Extract tweets from X (Twitter) API v2, transform with Pandas, and store CSVs in Amazon S3, all orchestrated by Apache Airflow on an EC2 instance.
 
-What this shows
+✨ What this shows
 
--Orchestrating a daily ETL in Airflow (DAGs, retries, logs)
--Using Tweepy (X API v2) for extraction
--Transforming raw JSON → tidy table with Pandas
--Uploading to S3 with boto3 (IAM role, no AWS keys in code)
+Orchestrating a daily ETL in Airflow (DAGs, retries, logs)
+
+Using Tweepy (X API v2) for extraction
+
+Transforming raw JSON → tidy table with Pandas
+
+Uploading to S3 with boto3 (IAM role, no AWS keys in code)
 
 1) Tech stack
 
@@ -68,11 +70,99 @@ No AWS keys in code—boto3 will use this role automatically.
 4) Project files
 4.1 dags/twitter_etl.py (no secrets in code)
 # dags/twitter_etl.py
+import os
+import tweepy
+import pandas as pd
+from datetime import datetime
+import boto3
+from botocore.exceptions import ClientError
+
+def run_twitter_etl():
+    """
+    Extract tweets via X API v2, transform with Pandas,
+    save CSV locally, then upload to S3.
+    """
+
+    # Get bearer token at runtime (Airflow Variable or env var)
+    bearer_token = os.getenv("TW_BEARER_TOKEN") or os.getenv("AIRFLOW_VAR_TW_BEARER_TOKEN")
+    if not bearer_token:
+        raise ValueError("Twitter Bearer Token not found. Set Airflow Variable 'TW_BEARER_TOKEN' or env var TW_BEARER_TOKEN")
+
+    client = tweepy.Client(bearer_token=bearer_token, wait_on_rate_limit=True)
+
+    username = os.getenv("TW_USERNAME", "wtfruchss")  # no '@'
+    user = client.get_user(username=username)
+    user_id = user.data.id
+
+    tweets = tweepy.Paginator(
+        client.get_users_tweets,
+        id=user_id,
+        exclude=["retweets", "replies"],
+        tweet_fields=["created_at", "public_metrics"],
+        max_results=40,
+    ).flatten(limit=50)
+
+    rows = []
+    for t in tweets:
+        m = t.public_metrics or {}
+        rows.append({
+            "user": username,
+            "text": t.text,
+            "favorite_count": m.get("like_count"),
+            "retweet_count": m.get("retweet_count"),
+            "created_at": t.created_at,
+        })
+
+    df = pd.DataFrame(rows)
+
+    # Save locally
+    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    local_path = f"/home/ubuntu/airflow/twitter_dag/refined_tweets_{ts}.csv"
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    df.to_csv(local_path, index=False)
+
+    # Upload to S3 (IAM role)
+    bucket = os.getenv("S3_BUCKET", "<YOUR_BUCKET>")
+    key = f"refined_tweets_{ts}.csv"
+
+    s3 = boto3.client("s3")
+    try:
+        s3.upload_file(local_path, bucket, key)
+        print(f"Uploaded to s3://{bucket}/{key}")
+    except ClientError as e:
+        raise RuntimeError(f"S3 upload failed: {e}") from e
+
 
 This file does not contain secrets. It reads the bearer token from Airflow Variable or env var.
 
 4.2 dags/twitter_dag.py
 # dags/twitter_dag.py
+from datetime import timedelta, datetime
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from twitter_etl import run_twitter_etl
+
+default_args = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "start_date": datetime(2024, 1, 1),
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+with DAG(
+    dag_id="twitter_dag",
+    default_args=default_args,
+    description="Daily Twitter ETL to S3",
+    schedule=timedelta(days=1),
+    catchup=False,
+    tags=["twitter", "etl"],
+) as dag:
+    run_etl = PythonOperator(
+        task_id="complete_twitter_etl",
+        python_callable=run_twitter_etl,
+        # execution_timeout=timedelta(minutes=30),  # optional
+    )
 
 5) Configure secrets (no tokens in Git)
 
@@ -85,12 +175,14 @@ airflow variables set TW_BEARER_TOKEN 'YOUR_REAL_TOKEN'
 airflow variables set S3_BUCKET 'your-bucket-name'
 airflow variables set TW_USERNAME 'wtfruchss'
 
+
 Airflow automatically exposes Variables to code as env vars AIRFLOW_VAR_<KEY>.
 
 B) Environment variables
 export TW_BEARER_TOKEN='YOUR_REAL_TOKEN'
 export S3_BUCKET='your-bucket-name'
 export TW_USERNAME='wtfruchss'
+
 
 Never commit tokens; they live only in Airflow Variables or env vars.
 
@@ -152,3 +244,23 @@ Use Airflow Variables or env vars for the bearer token.
 Prefer IAM role for S3 access (already used here).
 
 Add these to .gitignore:
+
+# .gitignore
+__pycache__/
+*.pyc
+.venv/
+airflow-venv/
+logs/
+env/
+.env
+.airflowenv
+*.pem
+*.key
+*.json
+
+📄 requirements.txt
+apache-airflow==2.9.2
+tweepy==4.14.0
+pandas==2.2.2
+boto3==1.34.0
+s3fs==2023.12.2
