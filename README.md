@@ -1,2 +1,12 @@
 # twitter-airflow-data-engineering-project
-This project builds a data pipeline that extracts tweets from the Twitter (X) API v2, transforms them into a structured format with Pandas, stores them in Amazon S3, and makes them queryable with AWS Athena. The entire pipeline is automated and scheduled using Apache Airflow running on AWS EC2.
+Goal: Extract tweets from X (Twitter) API v2, transform with Pandas, and store CSVs in Amazon S3, all orchestrated by Apache Airflow on an EC2 instance.
+
+What this shows
+
+-Orchestrating a daily ETL in Airflow (DAGs, retries, logs)
+
+-Using Tweepy (X API v2) for extraction
+
+-Transforming raw JSON → tidy table with Pandas
+
+-Uploading to S3 with boto3 (IAM role, no AWS keys in code)
